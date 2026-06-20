@@ -1,4 +1,4 @@
-import type { FloorPlan } from '../types'
+import type { FloorPlan, FurnitureType } from '../types'
 
 interface ControlPanelProps {
   floorPlan: FloorPlan | null
@@ -7,12 +7,16 @@ interface ControlPanelProps {
   status: string
   isOptimizing: boolean
   isSaving: boolean
+  furnitureCount: number
   onOptimize: () => void
   onSave: () => void
   onReset: () => void
   onNameChange: (name: string) => void
   onDescChange: (desc: string) => void
   onHeightChange: (h: number) => void
+  onAddFurniture: (type: FurnitureType) => void
+  onRemoveLastFurniture: () => void
+  onClearFurniture: () => void
 }
 
 export default function ControlPanel({
@@ -22,12 +26,16 @@ export default function ControlPanel({
   status,
   isOptimizing,
   isSaving,
+  furnitureCount,
   onOptimize,
   onSave,
   onReset,
   onNameChange,
   onDescChange,
   onHeightChange,
+  onAddFurniture,
+  onRemoveLastFurniture,
+  onClearFurniture,
 }: ControlPanelProps) {
   return (
     <div
@@ -164,6 +172,126 @@ export default function ControlPanel({
         </div>
       </div>
 
+      <div
+        style={{
+          padding: '16px',
+          background: '#f5f3ff',
+          borderRadius: '10px',
+          border: '1px solid #ddd6fe',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            marginBottom: '12px',
+          }}
+        >
+          <div style={{ fontSize: '13px', fontWeight: 700, color: '#5b21b6' }}>
+            🛋️ 家具布置 (AABB 碰撞)
+          </div>
+          <span
+            style={{
+              fontSize: '11px',
+              fontWeight: 600,
+              color: '#7c3aed',
+              background: '#ede9fe',
+              padding: '2px 8px',
+              borderRadius: '999px',
+            }}
+          >
+            {furnitureCount} 件
+          </span>
+        </div>
+
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(3, 1fr)',
+            gap: '8px',
+            marginBottom: '10px',
+          }}
+        >
+          {(
+            [
+              { type: 'sofa' as FurnitureType, label: '🛋️ 沙发', bg: '#8b5cf6' },
+              { type: 'bed' as FurnitureType, label: '🛏️ 床', bg: '#f59e0b' },
+              { type: 'table' as FurnitureType, label: '🪑 桌子', bg: '#a16207' },
+              { type: 'chair' as FurnitureType, label: '💺 椅子', bg: '#6366f1' },
+              { type: 'wardrobe' as FurnitureType, label: '🗄️ 衣柜', bg: '#0f766e' },
+            ]
+          ).map((item) => (
+            <button
+              key={item.type}
+              onClick={() => onAddFurniture(item.type)}
+              style={{
+                padding: '10px 6px',
+                background: item.bg,
+                color: '#fff',
+                border: 'none',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+                transition: 'opacity 0.2s, transform 0.1s',
+              }}
+              onMouseDown={(e) => (e.currentTarget.style.transform = 'scale(0.96)')}
+              onMouseUp={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+              onMouseLeave={(e) => (e.currentTarget.style.transform = 'scale(1)')}
+            >
+              {item.label}
+            </button>
+          ))}
+          <button
+            onClick={onRemoveLastFurniture}
+            disabled={furnitureCount === 0}
+            style={{
+              padding: '10px 6px',
+              background: furnitureCount === 0 ? '#e5e7eb' : '#f3f4f6',
+              color: furnitureCount === 0 ? '#9ca3af' : '#374151',
+              border: '1px solid #e5e7eb',
+              borderRadius: '8px',
+              fontSize: '12px',
+              fontWeight: 600,
+              cursor: furnitureCount === 0 ? 'not-allowed' : 'pointer',
+            }}
+          >
+            ↩ 撤销
+          </button>
+        </div>
+
+        <button
+          onClick={onClearFurniture}
+          disabled={furnitureCount === 0}
+          style={{
+            width: '100%',
+            padding: '8px 12px',
+            background: furnitureCount === 0 ? '#fee2e2' : '#ef4444',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '8px',
+            fontSize: '12px',
+            fontWeight: 600,
+            cursor: furnitureCount === 0 ? 'not-allowed' : 'pointer',
+            opacity: furnitureCount === 0 ? 0.6 : 1,
+          }}
+        >
+          🗑️ 清空所有家具
+        </button>
+
+        <div
+          style={{
+            marginTop: '10px',
+            fontSize: '11px',
+            color: '#6d28d9',
+            lineHeight: 1.5,
+          }}
+        >
+          拖动家具时若 AABB 与墙/其他家具重叠会变红并被阻止，松开后自动弹回原位。
+        </div>
+      </div>
+
       {status && (
         <div
           style={{
@@ -263,6 +391,9 @@ export default function ControlPanel({
         </div>
         <ul style={{ margin: 0, paddingLeft: '18px', fontSize: '12px', color: '#78350f', lineHeight: 1.7 }}>
           <li>拖拽橙色球可拉伸户型角点</li>
+          <li>点击家具按钮放置，再拖动家具调整位置</li>
+          <li>家具碰墙/其他家具(AABB重叠)会变红并被阻止</li>
+          <li>松开手时若处于碰撞状态会自动弹回原位</li>
           <li>鼠标左键旋转，右键平移，滚轮缩放</li>
           <li>优化后坐标将自动吸附网格和直角</li>
           <li>保存后数据持久化到SQLite数据库</li>

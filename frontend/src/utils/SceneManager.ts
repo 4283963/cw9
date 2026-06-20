@@ -1,6 +1,6 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { CornerPoint } from '../types'
+import type { CornerPoint, Furniture, FurnitureType } from '../types'
 
 const WALL_COLOR = 0xe8dcc4
 const FLOOR_COLOR = 0xc9a975
@@ -10,8 +10,31 @@ const GRID_COLOR = 0xdddddd
 const SELECTED_COLOR = 0x00ff88
 const WIRE_COLOR = 0x2563eb
 
+const SOFA_COLOR = 0x8b5cf6
+const FURNITURE_COLLISION_COLOR = 0xff0000
+const FURNITURE_COLLISION_EMISSIVE = 0x660000
+
 const WALL_THICKNESS = 0.15
 const CORNER_SIZE = 0.18
+
+interface AABB {
+  minX: number
+  maxX: number
+  minY: number
+  maxY: number
+  minZ: number
+  maxZ: number
+}
+
+type DragMode = 'none' | 'corner' | 'furniture'
+
+const FURNITURE_PRESETS: Record<FurnitureType, { width: number; height: number; depth: number; color: number }> = {
+  sofa: { width: 2.0, height: 1.2, depth: 0.9, color: SOFA_COLOR },
+  bed: { width: 2.0, height: 0.8, depth: 2.1, color: 0xf59e0b },
+  table: { width: 1.4, height: 0.75, depth: 0.8, color: 0xa16207 },
+  chair: { width: 0.5, height: 1.0, depth: 0.5, color: 0x6366f1 },
+  wardrobe: { width: 1.6, height: 2.2, depth: 0.6, color: 0x0f766e },
+}
 
 export class SceneManager {
   public scene: THREE.Scene
@@ -28,19 +51,37 @@ export class SceneManager {
   private ceilingGroup: THREE.Group
   private cornerGroup: THREE.Group
   private wireframeGroup: THREE.Group
+  private furnitureGroup: THREE.Group
   private groundPlane: THREE.Mesh
 
   private selectedCorner: THREE.Mesh | null = null
   private isDragging: boolean = false
+  private dragMode: DragMode = 'none'
   private dragPlane: THREE.Plane
   private dragOffset: THREE.Vector3
+
+  private selectedFurniture: THREE.Group | null = null
+  private selectedFurnitureId: string | null = null
+  private furnitureDragOffset: THREE.Vector3 = new THREE.Vector3()
+  private furnitureOriginalPos: THREE.Vector3 = new THREE.Vector3()
+  private furnitureIsColliding: boolean = false
+  private snapAnim: {
+    mesh: THREE.Object3D
+    from: THREE.Vector3
+    to: THREE.Vector3
+    start: number
+    duration: number
+  } | null = null
 
   private corners: CornerPoint[] = []
   private wallHeight: number = 2.8
 
   private cornerMeshes: Map<string, THREE.Mesh> = new Map()
+  private furniture: Furniture[] = []
+  private furnitureMeshes: Map<string, THREE.Group> = new Map()
 
   private onCornerMoved: ((index: number, x: number, z: number) => void) | null = null
+  private onFurnitureChanged: (() => void) | null = null
   private animationId: number | null = null
 
   constructor(container: HTMLElement) {
@@ -78,12 +119,14 @@ export class SceneManager {
     this.ceilingGroup = new THREE.Group()
     this.cornerGroup = new THREE.Group()
     this.wireframeGroup = new THREE.Group()
+    this.furnitureGroup = new THREE.Group()
 
     this.scene.add(this.floorGroup)
     this.scene.add(this.wallGroup)
     this.scene.add(this.ceilingGroup)
     this.scene.add(this.cornerGroup)
     this.scene.add(this.wireframeGroup)
+    this.scene.add(this.furnitureGroup)
 
     this.setupLights()
     this.setupGrid()
@@ -161,12 +204,45 @@ export class SceneManager {
   private onPointerDown(event: PointerEvent): void {
     this.updateMouse(event)
     this.raycaster.setFromCamera(this.mouse, this.camera)
+
+    // Furniture has drag priority so a sofa over a corner is still grabbable
+    const furnIntersects = this.raycaster.intersectObjects(this.furnitureGroup.children, true)
+    if (furnIntersects.length > 0) {
+      let obj: THREE.Object3D | null = furnIntersects[0].object
+      let group: THREE.Group | null = null
+      let furnitureId: string | null = null
+      while (obj) {
+        if (obj.userData && obj.userData.furnitureId) {
+          furnitureId = obj.userData.furnitureId as string
+          group = obj as THREE.Group
+          break
+        }
+        obj = obj.parent
+      }
+      if (furnitureId && group) {
+        this.selectedFurniture = group
+        this.selectedFurnitureId = furnitureId
+        this.snapAnim = null
+        const point = furnIntersects[0].point
+        this.furnitureDragOffset.set(point.x - group.position.x, 0, point.z - group.position.z)
+        this.furnitureOriginalPos.copy(group.position)
+        this.furnitureIsColliding = false
+        this.setFurnitureColor(group, false)
+        this.isDragging = true
+        this.dragMode = 'furniture'
+        this.controls.enabled = false
+        this.renderer.domElement.setPointerCapture(event.pointerId)
+        return
+      }
+    }
+
     const intersects = this.raycaster.intersectObjects(this.cornerGroup.children, false)
     if (intersects.length > 0) {
       const mesh = intersects[0].object as THREE.Mesh
       this.selectedCorner = mesh
       this.highlightCorner(mesh, true)
       this.isDragging = true
+      this.dragMode = 'corner'
       this.controls.enabled = false
       const point = intersects[0].point
       this.dragOffset.copy(point).sub(mesh.position)
@@ -175,35 +251,86 @@ export class SceneManager {
   }
 
   private onPointerMove(event: PointerEvent): void {
-    if (!this.isDragging || !this.selectedCorner) return
-    this.updateMouse(event)
-    this.raycaster.setFromCamera(this.mouse, this.camera)
-    const intersection = new THREE.Vector3()
-    if (this.raycaster.ray.intersectPlane(this.dragPlane, intersection)) {
-      const newPos = intersection.sub(this.dragOffset)
-      const clampedX = Math.max(-100, Math.min(100, Number.isFinite(newPos.x) ? newPos.x : 0))
-      const clampedZ = Math.max(-100, Math.min(100, Number.isFinite(newPos.z) ? newPos.z : 0))
-      this.selectedCorner.position.x = clampedX
-      this.selectedCorner.position.z = clampedZ
-      const index = this.selectedCorner.userData.orderIndex as number
-      if (this.onCornerMoved && Number.isInteger(index) && index >= 0 && index < this.corners.length) {
-        this.onCornerMoved(index, clampedX, clampedZ)
+    if (!this.isDragging) return
+
+    if (this.dragMode === 'corner' && this.selectedCorner) {
+      this.updateMouse(event)
+      this.raycaster.setFromCamera(this.mouse, this.camera)
+      const intersection = new THREE.Vector3()
+      if (this.raycaster.ray.intersectPlane(this.dragPlane, intersection)) {
+        const newPos = intersection.sub(this.dragOffset)
+        const clampedX = Math.max(-100, Math.min(100, Number.isFinite(newPos.x) ? newPos.x : 0))
+        const clampedZ = Math.max(-100, Math.min(100, Number.isFinite(newPos.z) ? newPos.z : 0))
+        this.selectedCorner.position.x = clampedX
+        this.selectedCorner.position.z = clampedZ
+        const index = this.selectedCorner.userData.orderIndex as number
+        if (this.onCornerMoved && Number.isInteger(index) && index >= 0 && index < this.corners.length) {
+          this.onCornerMoved(index, clampedX, clampedZ)
+        }
+        if (Number.isInteger(index) && index >= 0 && index < this.corners.length) {
+          this.corners[index].x = clampedX
+          this.corners[index].z = clampedZ
+          this.updateWalls()
+          this.updateWireframe()
+        }
       }
-      if (Number.isInteger(index) && index >= 0 && index < this.corners.length) {
-        this.corners[index].x = clampedX
-        this.corners[index].z = clampedZ
-        this.updateWalls()
-        this.updateWireframe()
+      return
+    }
+
+    if (this.dragMode === 'furniture' && this.selectedFurniture && this.selectedFurnitureId) {
+      this.updateMouse(event)
+      this.raycaster.setFromCamera(this.mouse, this.camera)
+      const intersection = new THREE.Vector3()
+      if (this.raycaster.ray.intersectPlane(this.dragPlane, intersection)) {
+        const rawX = intersection.x - this.furnitureDragOffset.x
+        const rawZ = intersection.z - this.furnitureDragOffset.z
+        const clampedX = Math.max(-100, Math.min(100, Number.isFinite(rawX) ? rawX : 0))
+        const clampedZ = Math.max(-100, Math.min(100, Number.isFinite(rawZ) ? rawZ : 0))
+
+        const colliding = this.checkFurnitureCollision(this.selectedFurnitureId, clampedX, clampedZ)
+        if (colliding) {
+          // Block: keep at last valid position, turn red to signal rejection
+          this.setFurnitureColor(this.selectedFurniture, true)
+          this.furnitureIsColliding = true
+        } else {
+          this.setFurnitureColor(this.selectedFurniture, false)
+          this.furnitureIsColliding = false
+          this.selectedFurniture.position.x = clampedX
+          this.selectedFurniture.position.z = clampedZ
+          const f = this.furniture.find((ff) => ff.id === this.selectedFurnitureId)
+          if (f) {
+            f.position.x = clampedX
+            f.position.z = clampedZ
+          }
+        }
       }
     }
   }
 
   private onPointerUp(event: PointerEvent): void {
-    if (this.selectedCorner) {
+    if (this.dragMode === 'corner' && this.selectedCorner) {
       this.highlightCorner(this.selectedCorner, false)
     }
+
+    if (this.dragMode === 'furniture' && this.selectedFurniture) {
+      if (this.furnitureIsColliding) {
+        // Release while blocked: spring back to the original position
+        this.startSnapBack(this.selectedFurniture, this.furnitureOriginalPos)
+        const f = this.furniture.find((ff) => ff.id === this.selectedFurnitureId)
+        if (f) {
+          f.position.x = this.furnitureOriginalPos.x
+          f.position.z = this.furnitureOriginalPos.z
+        }
+      }
+      this.setFurnitureColor(this.selectedFurniture, false)
+    }
+
     this.selectedCorner = null
+    this.selectedFurniture = null
+    this.selectedFurnitureId = null
+    this.furnitureIsColliding = false
     this.isDragging = false
+    this.dragMode = 'none'
     this.controls.enabled = true
     try {
       this.renderer.domElement.releasePointerCapture(event.pointerId)
@@ -256,6 +383,9 @@ export class SceneManager {
     this.clearGroup(this.wallGroup)
     this.clearGroup(this.ceilingGroup)
     this.clearGroup(this.wireframeGroup)
+    this.clearGroup(this.furnitureGroup)
+    this.furnitureMeshes.clear()
+    this.furniture = []
 
     this.buildCorners()
     this.buildFloor()
@@ -416,9 +546,305 @@ export class SceneManager {
     this.onCornerMoved = callback
   }
 
+  public setFurnitureChangedCallback(callback: () => void): void {
+    this.onFurnitureChanged = callback
+  }
+
+  // ===== Furniture: creation =====
+
+  private createSofaMesh(furnitureId: string, color: number): THREE.Group {
+    const group = new THREE.Group()
+    const makeMat = () =>
+      new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1 })
+
+    const base = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.4, 0.9), makeMat())
+    base.position.set(0, 0.2, 0)
+    base.castShadow = true
+    base.receiveShadow = true
+    group.add(base)
+
+    const back = new THREE.Mesh(new THREE.BoxGeometry(2.0, 0.8, 0.2), makeMat())
+    back.position.set(0, 0.8, -0.35)
+    back.castShadow = true
+    group.add(back)
+
+    const leftArm = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 0.9), makeMat())
+    leftArm.position.set(-0.9, 0.5, 0)
+    leftArm.castShadow = true
+    group.add(leftArm)
+
+    const rightArm = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.6, 0.9), makeMat())
+    rightArm.position.set(0.9, 0.5, 0)
+    rightArm.castShadow = true
+    group.add(rightArm)
+
+    group.userData.furnitureId = furnitureId
+    group.userData.baseColor = color
+    group.userData.isFurniture = true
+    group.traverse((c) => {
+      c.userData.furnitureId = furnitureId
+    })
+    return group
+  }
+
+  private createFurnitureMesh(type: FurnitureType, furnitureId: string, color: number): THREE.Group {
+    if (type === 'sofa') {
+      return this.createSofaMesh(furnitureId, color)
+    }
+    // Generic fallback: a single labeled box
+    const preset = FURNITURE_PRESETS[type]
+    const group = new THREE.Group()
+    const geom = new THREE.BoxGeometry(preset.width, preset.height, preset.depth)
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.1 })
+    const mesh = new THREE.Mesh(geom, mat)
+    mesh.position.set(0, preset.height / 2, 0)
+    mesh.castShadow = true
+    mesh.receiveShadow = true
+    group.add(mesh)
+    group.userData.furnitureId = furnitureId
+    group.userData.baseColor = color
+    group.userData.isFurniture = true
+    group.traverse((c) => {
+      c.userData.furnitureId = furnitureId
+    })
+    return group
+  }
+
+  // ===== Furniture: AABB & collision =====
+
+  private getFurnitureAABB(f: Furniture): AABB {
+    const hw = f.dimensions.width / 2
+    const hd = f.dimensions.depth / 2
+    const cos = Math.abs(Math.cos(f.rotationY))
+    const sin = Math.abs(Math.sin(f.rotationY))
+    const halfX = hw * cos + hd * sin
+    const halfZ = hw * sin + hd * cos
+    return {
+      minX: f.position.x - halfX,
+      maxX: f.position.x + halfX,
+      minY: f.position.y,
+      maxY: f.position.y + f.dimensions.height,
+      minZ: f.position.z - halfZ,
+      maxZ: f.position.z + halfZ,
+    }
+  }
+
+  private getWallAABBs(): AABB[] {
+    const boxes: AABB[] = []
+    if (this.corners.length < 2) return boxes
+    const t = WALL_THICKNESS
+    for (let i = 0; i < this.corners.length; i++) {
+      const a = this.corners[i]
+      const b = this.corners[(i + 1) % this.corners.length]
+      const dx = b.x - a.x
+      const dz = b.z - a.z
+      const len = Math.hypot(dx, dz)
+      if (len < 1e-6) continue
+      const nx = -dz / len
+      const nz = dx / len
+      const ox = nx * (t / 2)
+      const oz = nz * (t / 2)
+      const corners = [
+        a.x + ox, a.z + oz,
+        a.x - ox, a.z - oz,
+        b.x + ox, b.z + oz,
+        b.x - ox, b.z - oz,
+      ]
+      const xs = [corners[0], corners[2], corners[4], corners[6]]
+      const zs = [corners[1], corners[3], corners[5], corners[7]]
+      boxes.push({
+        minX: Math.min(...xs),
+        maxX: Math.max(...xs),
+        minY: 0,
+        maxY: this.wallHeight,
+        minZ: Math.min(...zs),
+        maxZ: Math.max(...zs),
+      })
+    }
+    return boxes
+  }
+
+  private aabbOverlap(a: AABB, b: AABB): boolean {
+    return (
+      a.minX < b.maxX && a.maxX > b.minX &&
+      a.minY < b.maxY && a.maxY > b.minY &&
+      a.minZ < b.maxZ && a.maxZ > b.minZ
+    )
+  }
+
+  private checkCollisionAt(
+    dims: { width: number; height: number; depth: number },
+    x: number,
+    z: number,
+    ignoreId?: string
+  ): boolean {
+    const testFurniture: Furniture = {
+      id: '__test__',
+      type: 'sofa',
+      position: { x, y: 0, z },
+      dimensions: dims,
+      rotationY: 0,
+      color: 0,
+    }
+    const testAABB = this.getFurnitureAABB(testFurniture)
+    for (const wb of this.getWallAABBs()) {
+      if (this.aabbOverlap(testAABB, wb)) return true
+    }
+    for (const other of this.furniture) {
+      if (other.id === ignoreId) continue
+      if (this.aabbOverlap(testAABB, this.getFurnitureAABB(other))) return true
+    }
+    return false
+  }
+
+  private checkFurnitureCollision(furnitureId: string, x: number, z: number): boolean {
+    const f = this.furniture.find((ff) => ff.id === furnitureId)
+    if (!f) return false
+    return this.checkCollisionAt(f.dimensions, x, z, furnitureId)
+  }
+
+  private findFreeSpot(dims: { width: number; height: number; depth: number }): { x: number; z: number } {
+    if (this.corners.length >= 3) {
+      let cx = 0
+      let cz = 0
+      for (const c of this.corners) {
+        cx += c.x
+        cz += c.z
+      }
+      cx /= this.corners.length
+      cz /= this.corners.length
+      const candidates = [
+        { x: cx, z: cz },
+        { x: cx + 1.5, z: cz },
+        { x: cx - 1.5, z: cz },
+        { x: cx, z: cz + 1.5 },
+        { x: cx, z: cz - 1.5 },
+        { x: cx + 1.5, z: cz + 1.5 },
+        { x: cx - 1.5, z: cz - 1.5 },
+      ]
+      for (const cand of candidates) {
+        if (!this.checkCollisionAt(dims, cand.x, cand.z)) {
+          return cand
+        }
+      }
+    }
+    return { x: 2, z: 2 }
+  }
+
+  // ===== Furniture: color & snap-back =====
+
+  private setFurnitureColor(group: THREE.Object3D, red: boolean): void {
+    const baseColor = (group.userData.baseColor as number) ?? SOFA_COLOR
+    const targetColor = red ? FURNITURE_COLLISION_COLOR : baseColor
+    const targetEmissive = red ? FURNITURE_COLLISION_EMISSIVE : 0x000000
+    group.traverse((child) => {
+      const mesh = child as THREE.Mesh
+      if (!mesh.isMesh) return
+      const mat = mesh.material as THREE.MeshStandardMaterial | THREE.MeshStandardMaterial[]
+      if (Array.isArray(mat)) {
+        mat.forEach((m) => {
+          m.color.setHex(targetColor)
+          m.emissive.setHex(targetEmissive)
+        })
+      } else if (mat) {
+        mat.color.setHex(targetColor)
+        mat.emissive.setHex(targetEmissive)
+      }
+    })
+  }
+
+  private startSnapBack(mesh: THREE.Object3D, to: THREE.Vector3): void {
+    this.snapAnim = {
+      mesh,
+      from: mesh.position.clone(),
+      to: to.clone(),
+      start: performance.now(),
+      duration: 280,
+    }
+  }
+
+  // ===== Furniture: public API =====
+
+  public addFurniture(type: FurnitureType = 'sofa', position?: { x: number; z: number }): string {
+    const preset = FURNITURE_PRESETS[type]
+    const dims = { width: preset.width, height: preset.height, depth: preset.depth }
+    const spot = position
+      ? { x: position.x, z: position.z }
+      : this.findFreeSpot(dims)
+    const id = `furn-${Date.now()}-${Math.floor(Math.random() * 100000)}`
+    const mesh = this.createFurnitureMesh(type, id, preset.color)
+    mesh.position.set(spot.x, 0, spot.z)
+    this.furnitureGroup.add(mesh)
+    this.furnitureMeshes.set(id, mesh)
+    const furniture: Furniture = {
+      id,
+      type,
+      position: { x: spot.x, y: 0, z: spot.z },
+      dimensions: dims,
+      rotationY: 0,
+      color: preset.color,
+    }
+    this.furniture.push(furniture)
+    if (this.onFurnitureChanged) this.onFurnitureChanged()
+    return id
+  }
+
+  public removeLastFurniture(): void {
+    if (this.furniture.length === 0) return
+    const last = this.furniture[this.furniture.length - 1]
+    this.removeFurniture(last.id)
+  }
+
+  public removeFurniture(id: string): void {
+    const mesh = this.furnitureMeshes.get(id)
+    if (mesh) {
+      this.furnitureGroup.remove(mesh)
+      mesh.traverse((c) => {
+        const m = c as THREE.Mesh
+        if (m.isMesh) {
+          m.geometry?.dispose()
+          const mat = m.material as THREE.Material | THREE.Material[]
+          if (Array.isArray(mat)) mat.forEach((mm) => mm.dispose())
+          else mat?.dispose()
+        }
+      })
+      this.furnitureMeshes.delete(id)
+    }
+    this.furniture = this.furniture.filter((f) => f.id !== id)
+    if (this.onFurnitureChanged) this.onFurnitureChanged()
+  }
+
+  public clearFurniture(): void {
+    this.clearGroup(this.furnitureGroup)
+    this.furnitureMeshes.clear()
+    this.furniture = []
+    if (this.onFurnitureChanged) this.onFurnitureChanged()
+  }
+
+  public getFurniture(): Furniture[] {
+    return this.furniture.map((f) => ({
+      id: f.id,
+      type: f.type,
+      position: { ...f.position },
+      dimensions: { ...f.dimensions },
+      rotationY: f.rotationY,
+      color: f.color,
+    }))
+  }
+
   private animate(): void {
     this.animationId = requestAnimationFrame(this.animate.bind(this))
     this.controls.update()
+    if (this.snapAnim) {
+      const elapsed = performance.now() - this.snapAnim.start
+      const t = Math.min(1, elapsed / this.snapAnim.duration)
+      const eased = 1 - Math.pow(1 - t, 3)
+      this.snapAnim.mesh.position.lerpVectors(this.snapAnim.from, this.snapAnim.to, eased)
+      if (t >= 1) {
+        this.snapAnim.mesh.position.copy(this.snapAnim.to)
+        this.snapAnim = null
+      }
+    }
     this.renderer.render(this.scene, this.camera)
   }
 

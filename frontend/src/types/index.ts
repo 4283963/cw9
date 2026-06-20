@@ -42,6 +42,17 @@ export interface OptimizeResponse {
   perimeter: number
 }
 
+export type FurnitureType = 'sofa' | 'bed' | 'table' | 'chair' | 'wardrobe'
+
+export interface Furniture {
+  id: string
+  type: FurnitureType
+  position: { x: number; y: number; z: number }
+  dimensions: { width: number; height: number; depth: number }
+  rotationY: number
+  color: number
+}
+
 export interface ApiResponse<T> {
   data?: T
   error?: string

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import FloorPlanViewer from './components/FloorPlanViewer'
 import ControlPanel from './components/ControlPanel'
 import { floorPlanService } from './services/api'
-import type { FloorPlan, CornerPoint } from './types'
+import type { FloorPlan, CornerPoint, FurnitureType } from './types'
 import { SceneManager } from './utils/SceneManager'
 
 function App() {
@@ -14,6 +14,7 @@ function App() {
   const [area, setArea] = useState(0)
   const [perimeter, setPerimeter] = useState(0)
   const [cornersVersion, setCornersVersion] = useState(0)
+  const [furnitureCount, setFurnitureCount] = useState(0)
 
   const loadDefault = useCallback(async () => {
     try {
@@ -183,6 +184,48 @@ function App() {
     setCornersVersion((v) => v + 1)
   }, [])
 
+  // Viewer remounts on cornersVersion change, which clears furniture in the scene.
+  useEffect(() => {
+    setFurnitureCount(0)
+  }, [cornersVersion])
+
+  const refreshFurnitureCount = useCallback(() => {
+    if (viewerRef.current) {
+      setFurnitureCount(viewerRef.current.getFurniture().length)
+    }
+  }, [])
+
+  const handleAddFurniture = useCallback(
+    (type: FurnitureType) => {
+      if (!viewerRef.current) return
+      const id = viewerRef.current.addFurniture(type)
+      refreshFurnitureCount()
+      const labelMap: Record<FurnitureType, string> = {
+        sofa: '沙发',
+        bed: '床',
+        table: '桌子',
+        chair: '椅子',
+        wardrobe: '衣柜',
+      }
+      setStatus(`🛋️ 已放置${labelMap[type]} (${id.substring(5, 13)}...)，拖动可调整位置，碰到墙/家具会变红弹回`)
+    },
+    [refreshFurnitureCount]
+  )
+
+  const handleRemoveLastFurniture = useCallback(() => {
+    if (!viewerRef.current) return
+    viewerRef.current.removeLastFurniture()
+    refreshFurnitureCount()
+    setStatus('🧹 已移除最近放置的家具')
+  }, [refreshFurnitureCount])
+
+  const handleClearFurniture = useCallback(() => {
+    if (!viewerRef.current) return
+    viewerRef.current.clearFurniture()
+    refreshFurnitureCount()
+    setStatus('🧹 已清空所有家具')
+  }, [refreshFurnitureCount])
+
   return (
     <div
       style={{
@@ -343,12 +386,16 @@ function App() {
               status={status}
               isOptimizing={isOptimizing}
               isSaving={isSaving}
+              furnitureCount={furnitureCount}
               onOptimize={handleOptimize}
               onSave={handleSave}
               onReset={handleReset}
               onNameChange={handleNameChange}
               onDescChange={handleDescChange}
               onHeightChange={handleHeightChange}
+              onAddFurniture={handleAddFurniture}
+              onRemoveLastFurniture={handleRemoveLastFurniture}
+              onClearFurniture={handleClearFurniture}
             />
           </div>
         </div>
