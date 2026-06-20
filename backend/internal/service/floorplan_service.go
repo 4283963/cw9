@@ -71,7 +71,8 @@ func (s *FloorPlanService) Create(req models.FloorPlanRequest) (*models.FloorPla
 	if !optResult.Valid {
 		return nil, errors.New(optResult.Message)
 	}
-	floorPlan.Corners = optResult.Corners
+	optimizedCorners := optResult.Corners
+	floorPlan.Corners = nil
 
 	db := database.GetDB()
 	tx := db.Begin()
@@ -84,9 +85,12 @@ func (s *FloorPlanService) Create(req models.FloorPlanRequest) (*models.FloorPla
 		return nil, err
 	}
 
-	for i := range floorPlan.Corners {
-		floorPlan.Corners[i].FloorPlanID = floorPlan.ID
-		if err := tx.Create(&floorPlan.Corners[i]).Error; err != nil {
+	for i := range optimizedCorners {
+		optimizedCorners[i].ID = ""
+		optimizedCorners[i].FloorPlanID = floorPlan.ID
+		optimizedCorners[i].OrderIndex = i
+		optimizedCorners[i].Y = 0
+		if err := tx.Create(&optimizedCorners[i]).Error; err != nil {
 			tx.Rollback()
 			return nil, err
 		}
@@ -96,6 +100,7 @@ func (s *FloorPlanService) Create(req models.FloorPlanRequest) (*models.FloorPla
 		return nil, err
 	}
 
+	floorPlan.Corners = optimizedCorners
 	return &floorPlan, nil
 }
 
@@ -154,7 +159,10 @@ func (s *FloorPlanService) Update(id string, req models.FloorPlanRequest) (*mode
 	}
 
 	for i := range newCorners {
+		newCorners[i].ID = ""
 		newCorners[i].FloorPlanID = existing.ID
+		newCorners[i].OrderIndex = i
+		newCorners[i].Y = 0
 		if err := tx.Create(&newCorners[i]).Error; err != nil {
 			tx.Rollback()
 			return nil, err

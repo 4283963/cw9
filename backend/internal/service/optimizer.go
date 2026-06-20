@@ -94,6 +94,21 @@ func OptimizeCorners(corners []models.CornerPoint, tolerance float64) models.Opt
 		}
 	}
 
+	for i := range optimized {
+		if !math.IsNaN(optimized[i].X) && !math.IsInf(optimized[i].X, 0) {
+			optimized[i].X = math.Max(-1000, math.Min(1000, optimized[i].X))
+		} else {
+			optimized[i].X = float64(i) * 1.5
+		}
+		if !math.IsNaN(optimized[i].Z) && !math.IsInf(optimized[i].Z, 0) {
+			optimized[i].Z = math.Max(-1000, math.Min(1000, optimized[i].Z))
+		} else {
+			optimized[i].Z = float64(i) * 1.0
+		}
+		optimized[i].Y = 0
+		optimized[i].OrderIndex = i
+	}
+
 	return models.OptimizeResponse{
 		Valid:     true,
 		Corners:   optimized,
@@ -158,40 +173,38 @@ func snapCornerToAngle(prev models.CornerPoint, curr *models.CornerPoint, next m
 	dir1X := curr.X - prev.X
 	dir1Z := curr.Z - prev.Z
 	len1 := math.Hypot(dir1X, dir1Z)
-	if len1 < 1e-6 {
+	if len1 < 0.001 {
 		return
 	}
 	dir1X /= len1
 	dir1Z /= len1
 
+	dir2X := next.X - curr.X
+	dir2Z := next.Z - curr.Z
+	len2 := math.Hypot(dir2X, dir2Z)
+	if len2 < 0.001 {
+		return
+	}
+
 	switch targetAngle {
+	case 0:
+		curr.X = (prev.X + next.X) / 2
+		curr.Z = (prev.Z + next.Z) / 2
 	case math.Pi / 2:
 		newDirX := -dir1Z
 		newDirZ := dir1X
-		dir2X := next.X - curr.X
-		dir2Z := next.Z - curr.Z
-		len2 := math.Hypot(dir2X, dir2Z)
-		if len2 < 1e-6 {
-			return
-		}
 		proj := dir2X*newDirX + dir2Z*newDirZ
+		proj = math.Max(-1000, math.Min(1000, proj))
 		curr.X = next.X - newDirX*proj
 		curr.Z = next.Z - newDirZ*proj
 	case math.Pi:
-		midX := (prev.X + next.X) / 2
-		midZ := (prev.Z + next.Z) / 2
-		curr.X = midX
-		curr.Z = midZ
+		curr.X = (prev.X + next.X) / 2
+		curr.Z = (prev.Z + next.Z) / 2
 	case 3 * math.Pi / 2:
 		newDirX := dir1Z
 		newDirZ := -dir1X
-		dir2X := next.X - curr.X
-		dir2Z := next.Z - curr.Z
-		len2 := math.Hypot(dir2X, dir2Z)
-		if len2 < 1e-6 {
-			return
-		}
 		proj := dir2X*newDirX + dir2Z*newDirZ
+		proj = math.Max(-1000, math.Min(1000, proj))
 		curr.X = next.X - newDirX*proj
 		curr.Z = next.Z - newDirZ*proj
 	}

@@ -181,16 +181,20 @@ export class SceneManager {
     const intersection = new THREE.Vector3()
     if (this.raycaster.ray.intersectPlane(this.dragPlane, intersection)) {
       const newPos = intersection.sub(this.dragOffset)
-      this.selectedCorner.position.x = newPos.x
-      this.selectedCorner.position.z = newPos.z
+      const clampedX = Math.max(-100, Math.min(100, Number.isFinite(newPos.x) ? newPos.x : 0))
+      const clampedZ = Math.max(-100, Math.min(100, Number.isFinite(newPos.z) ? newPos.z : 0))
+      this.selectedCorner.position.x = clampedX
+      this.selectedCorner.position.z = clampedZ
       const index = this.selectedCorner.userData.orderIndex as number
-      if (this.onCornerMoved) {
-        this.onCornerMoved(index, newPos.x, newPos.z)
+      if (this.onCornerMoved && Number.isInteger(index) && index >= 0 && index < this.corners.length) {
+        this.onCornerMoved(index, clampedX, clampedZ)
       }
-      this.corners[index].x = newPos.x
-      this.corners[index].z = newPos.z
-      this.updateWalls()
-      this.updateWireframe()
+      if (Number.isInteger(index) && index >= 0 && index < this.corners.length) {
+        this.corners[index].x = clampedX
+        this.corners[index].z = clampedZ
+        this.updateWalls()
+        this.updateWireframe()
+      }
     }
   }
 
@@ -232,8 +236,20 @@ export class SceneManager {
   }
 
   public setCorners(corners: CornerPoint[], wallHeight: number = 2.8): void {
-    this.corners = [...corners]
-    this.wallHeight = wallHeight
+    const validCorners = corners
+      .filter((c) => c != null)
+      .map((c, idx) => ({
+        id: c.id,
+        floorPlanId: c.floorPlanId,
+        x: Number.isFinite(c.x) ? c.x : idx * 1.5,
+        y: Number.isFinite(c.y) ? c.y : 0,
+        z: Number.isFinite(c.z) ? c.z : idx * 1.0,
+        orderIndex: Number.isInteger(c.orderIndex) ? c.orderIndex : idx,
+      }))
+      .sort((a, b) => a.orderIndex - b.orderIndex)
+
+    this.corners = validCorners
+    this.wallHeight = Number.isFinite(wallHeight) && wallHeight > 0.1 ? wallHeight : 2.8
     this.cornerMeshes.clear()
     this.clearGroup(this.cornerGroup)
     this.clearGroup(this.floorGroup)
@@ -249,7 +265,14 @@ export class SceneManager {
   }
 
   public getCorners(): CornerPoint[] {
-    return [...this.corners]
+    return this.corners.map((c, idx) => ({
+      id: c.id,
+      floorPlanId: c.floorPlanId,
+      x: Number.isFinite(c.x) ? c.x : idx * 1.5,
+      y: Number.isFinite(c.y) ? c.y : 0,
+      z: Number.isFinite(c.z) ? c.z : idx * 1.0,
+      orderIndex: Number.isInteger(c.orderIndex) ? c.orderIndex : idx,
+    }))
   }
 
   private buildCorners(): void {

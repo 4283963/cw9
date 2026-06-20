@@ -70,15 +70,26 @@ function App() {
       })
       if (resp.data) {
         const { valid, corners: optCorners, message, area: optArea, perimeter: optPerimeter } = resp.data
-        if (valid && optCorners) {
-          for (let i = 0; i < optCorners.length && i < currentCorners.length; i++) {
-            if (currentCorners[i].id) {
-              optCorners[i].id = currentCorners[i].id
-            }
-          }
-          setFloorPlan((prev) => (prev ? { ...prev, corners: optCorners } : prev))
-          setArea(optArea || 0)
-          setPerimeter(optPerimeter || 0)
+        if (valid && optCorners && optCorners.length >= 3) {
+          const cleanedCorners = optCorners
+            .filter((c) => c != null)
+            .map((c, idx) => ({
+              id: currentCorners[idx]?.id || c.id,
+              floorPlanId: c.floorPlanId,
+              x: Number.isFinite(c.x) ? c.x : currentCorners[idx]?.x || idx * 1.5,
+              y: Number.isFinite(c.y) ? c.y : 0,
+              z: Number.isFinite(c.z) ? c.z : currentCorners[idx]?.z || idx * 1.0,
+              orderIndex: Number.isInteger(c.orderIndex) ? c.orderIndex : idx,
+            }))
+            .sort((a, b) => a.orderIndex - b.orderIndex)
+
+          const cleanWallHeight = Number.isFinite(floorPlan.wallHeight) && floorPlan.wallHeight > 0.1
+            ? floorPlan.wallHeight
+            : 2.8
+
+          setFloorPlan((prev) => (prev ? { ...prev, corners: cleanedCorners, wallHeight: cleanWallHeight } : prev))
+          setArea(Number.isFinite(optArea) ? optArea : viewerRef.current?.getArea() || 0)
+          setPerimeter(Number.isFinite(optPerimeter) ? optPerimeter : viewerRef.current?.getPerimeter() || 0)
           setCornersVersion((v) => v + 1)
           setStatus(`✅ 坐标优化成功 - ${message || '已合规化'}`)
         } else {
@@ -98,10 +109,14 @@ function App() {
     setStatus('正在保存到数据库...')
     try {
       const currentCorners = viewerRef.current.getCorners()
+      const cleanWallHeight = Number.isFinite(floorPlan.wallHeight) && floorPlan.wallHeight > 0.1
+        ? floorPlan.wallHeight
+        : 2.8
+
       const req = {
-        name: floorPlan.name,
-        description: floorPlan.description,
-        wallHeight: floorPlan.wallHeight,
+        name: floorPlan.name || '未命名户型',
+        description: floorPlan.description || '',
+        wallHeight: cleanWallHeight,
         propertyId: floorPlan.propertyId,
         corners: currentCorners,
       }
@@ -113,9 +128,34 @@ function App() {
       }
       if (resp.data) {
         const saved = resp.data
-        setFloorPlan(saved)
-        setCornersVersion((v) => v + 1)
-        setStatus(`💾 保存成功！户型ID: ${saved.id.substring(0, 8)}...`)
+        if (saved.corners && saved.corners.length >= 3) {
+          const cleanedCorners = saved.corners
+            .filter((c) => c != null)
+            .map((c, idx) => ({
+              id: c.id,
+              floorPlanId: c.floorPlanId,
+              x: Number.isFinite(c.x) ? c.x : currentCorners[idx]?.x || idx * 1.5,
+              y: Number.isFinite(c.y) ? c.y : 0,
+              z: Number.isFinite(c.z) ? c.z : currentCorners[idx]?.z || idx * 1.0,
+              orderIndex: Number.isInteger(c.orderIndex) ? c.orderIndex : idx,
+            }))
+            .sort((a, b) => a.orderIndex - b.orderIndex)
+
+          const savedWallHeight = Number.isFinite(saved.wallHeight) && saved.wallHeight > 0.1
+            ? saved.wallHeight
+            : cleanWallHeight
+
+          const cleanedSaved = {
+            ...saved,
+            corners: cleanedCorners,
+            wallHeight: savedWallHeight,
+          }
+          setFloorPlan(cleanedSaved)
+          setCornersVersion((v) => v + 1)
+          setStatus(`💾 保存成功！户型ID: ${saved.id.substring(0, 8)}...`)
+        } else {
+          setStatus('⚠️ 保存返回数据异常，使用本地数据')
+        }
       }
     } catch (err: any) {
       setStatus(`❌ 保存失败: ${err.message}`)
